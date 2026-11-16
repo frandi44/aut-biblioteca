@@ -400,8 +400,9 @@ dialog::backdrop{background:rgba(8,22,36,.55)}
     <button class="tab" role="tab" data-view="biblioteca" aria-selected="true">Biblioteca <span class="pill" id="libCount">0</span></button>
     <button class="tab" role="tab" data-view="clase" aria-selected="false">Armar clase <span class="pill" id="planCount" hidden>0</span></button>
     <button class="tab" role="tab" data-view="mis-clases" aria-selected="false">Mis clases</button>
+    <button class="tab" role="tab" data-view="profesores" aria-selected="false" id="admin-tab" hidden>Profesores</button>
     <span class="spacer"></span>
-    <div id="aut-session"><span class="aut-email" id="aut-who"></span><button class="btn sm" id="aut-logout" type="button">Salir</button></div>
+    <div id="aut-session"><span class="aut-email" id="aut-who"></span><button class="btn sm" id="aut-change-password" type="button">Contraseña</button><button class="btn sm" id="aut-logout" type="button">Salir</button></div>
     <button class="btn gold" id="newEx"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg><span class="t">Subir ejercicio</span></button>
   </div>
 </nav>
@@ -455,6 +456,16 @@ dialog::backdrop{background:rgba(8,22,36,.55)}
   </section>
 
   <!-- MIS CLASES -->
+  <section class="view" id="v-profesores" hidden>
+    <div class="panel" style="margin-bottom:16px">
+      <h2>Profesores de AUT</h2>
+      <p class="muted">Consultá el equipo y administrá los roles. Solo los superadministradores pueden cambiar los permisos.</p>
+      <p class="muted" style="font-size:13px">Para crear una cuenta nueva: Supabase → Authentication → Users → Add user → Create new user. El perfil de profesor se crea automáticamente.</p>
+      <button class="btn sm" id="admin-refresh" type="button">Actualizar lista</button>
+      <p id="admin-message" role="status" style="font-size:13px"></p>
+      <div id="admin-people" style="display:grid;gap:10px"></div>
+    </div>
+  </section>
   <section class="view" id="v-mis-clases" hidden>
     <div class="resultbar"><h2>Mis clases</h2><span class="muted" id="clsNote"></span></div>
     <div class="classes" id="classes"></div>
@@ -1048,7 +1059,8 @@ async function unlock(user){
  S.plan=ls.get('aut_plan_draft_'+user.id,null)||blankPlan();favorites=new Set(ls.get(FAVORITES_KEY+'_'+user.id,[]));
  const {data:profile,error}=await sb.from('profiles').select('role,full_name').eq('id',user.id).single();
  if(error||!profile)throw Error('Tu usuario no tiene un perfil autorizado. Consultá con el administrador.');
- S.isAdmin=['administrador','superadministrador'].includes(profile.role);
+ S.role=profile.role;S.isAdmin=['administrador','superadministrador'].includes(profile.role);
+ $('#admin-tab').hidden=!S.isAdmin;
  S.names[user.id]=profile.full_name||'Vos';
  $('#aut-who').textContent=(profile.full_name||user.email||'Profesor')+' · '+profile.role;
  document.body.classList.add('aut-unlocked');$('#aut-auth').hidden=true;
@@ -1057,7 +1069,7 @@ async function unlock(user){
 }
 function lock(){
  document.body.classList.remove('aut-unlocked');$('#aut-auth').hidden=false;
- S.myId=null;S.isAdmin=false;S.mode='loading';S.exercises=[];S.classes=[];
+ S.myId=null;S.isAdmin=false;S.role=null;$('#admin-tab').hidden=true;S.mode='loading';S.exercises=[];S.classes=[];
  S.plan=blankPlan();S.f={q:'',ball:[],block:[],focus:[],fav:false};
  renderAll();renderClasses();
  document.querySelectorAll('dialog[open]').forEach(d=>d.close());
@@ -1556,13 +1568,62 @@ $('#vClose').onclick=()=>$('#dVideo').close();
 $('#dVideo').addEventListener('close',()=>{ if(VP.rec){ VP.rec.onstop=null; vStopRec(); VP.rec=null; VP.recDest=null; $('#vDl').disabled=false; $('#vSeek').disabled=false; $('#vPlay').disabled=false; } vPause(); });
 $('#dVideo').addEventListener('cancel',e=>{ if(VP.rec) e.preventDefault(); });
 
+
+/* ---------- Administración de profesores ---------- */
+async function refreshPeople(){
+ if(!S.isAdmin)return;
+ const msg=$('#admin-message'),root=$('#admin-people');
+ msg.textContent='Cargando profesores…';root.replaceChildren();
+ const {data,error}=await sb.from('profiles').select('id,full_name,role,created_at').order('created_at',{ascending:true});
+ if(error){msg.textContent='No se pudo cargar el equipo: '+error.message;return;}
+ msg.textContent=(data||[]).length+' usuario(s) registrado(s)';
+ for(const person of data||[]){
+  const item=document.createElement('div');item.className='panel';item.style.padding='14px';
+  const title=document.createElement('div');title.style.fontWeight='700';title.textContent=(person.full_name||'Profesor sin nombre')+(person.id===S.myId?' (vos)':'');item.append(title);
+  const id=document.createElement('div');id.className='muted';id.style.fontSize='11px';id.style.overflowWrap='anywhere';id.textContent='ID: '+person.id;item.append(id);
+  const fields=document.createElement('div');fields.style.cssText='display:flex;gap:10px;flex-wrap:wrap;align-items:end;margin-top:10px';
+  const nameField=document.createElement('label');nameField.className='field';nameField.style.cssText='flex:1;min-width:180px';nameField.textContent='Nombre';
+  const name=document.createElement('input');name.value=person.full_name||'';name.maxLength=120;name.style.cssText='display:block;width:100%;padding:9px;border:1px solid #d9e5ef;border-radius:9px';name.disabled=S.role!=='superadministrador';nameField.append(name);fields.append(nameField);
+  const roleField=document.createElement('label');roleField.className='field';roleField.style.cssText='min-width:170px';roleField.textContent='Rol';
+  const role=document.createElement('select');role.style.cssText='display:block;width:100%;padding:9px;border:1px solid #d9e5ef;border-radius:9px';
+  for(const r of ['profesor','administrador','superadministrador']){const opt=document.createElement('option');opt.value=r;opt.textContent=r;role.append(opt)}
+  role.value=person.role;role.disabled=S.role!=='superadministrador'||person.id===S.myId;roleField.append(role);fields.append(roleField);
+  if(S.role==='superadministrador'){
+   const save=document.createElement('button');save.type='button';save.className='btn primary sm';save.textContent='Guardar cambios';
+   save.onclick=async()=>{
+    const newName=name.value.trim(),newRole=role.value;
+    if(person.id===S.myId&&newRole!==person.role){alert('No podés cambiar tu propio rol desde este panel.');return}
+    if(newRole!==person.role&&!confirm('¿Cambiar el rol de este usuario a '+newRole+'?'))return;
+    save.disabled=true;msg.textContent='Guardando cambios…';
+    const {data:updated,error}=await sb.from('profiles').update({full_name:newName,role:newRole}).eq('id',person.id).select('id,full_name,role').single();
+    save.disabled=false;
+    if(error){msg.textContent='No se pudo guardar: '+error.message;return}
+    if(updated.id===S.myId){S.names[S.myId]=updated.full_name||'Vos';$('#aut-who').textContent=(updated.full_name||'Profesor')+' · '+S.role}
+    msg.textContent='Cambios guardados correctamente.';await refreshPeople();
+   };fields.append(save);
+  }
+  item.append(fields);root.append(item);
+ }
+}
+$('#admin-refresh').onclick=refreshPeople;
+$('#aut-change-password').onclick=async()=>{
+ const a=prompt('Ingresá tu nueva contraseña (mínimo 12 caracteres):');if(a===null)return;
+ if(a.length<12){alert('Usá al menos 12 caracteres.');return}
+ const b=prompt('Repetí la contraseña nueva:');if(b===null)return;
+ if(a!==b){alert('Las contraseñas no coinciden.');return}
+ const {error}=await sb.auth.updateUser({password:a});
+ if(error){alert('No se pudo cambiar la contraseña: '+error.message);return}
+ alert('Contraseña actualizada. Usala la próxima vez que inicies sesión.');
+};
+
 /* ---------- Navegación ---------- */
-const VIEWS=['biblioteca','clase','mis-clases'];
-function go(v){ if(!VIEWS.includes(v)) v='biblioteca';
+const VIEWS=['biblioteca','clase','mis-clases','profesores'];
+function go(v){ if(!VIEWS.includes(v)||(v==='profesores'&&!S.isAdmin)) v='biblioteca';
   VIEWS.forEach(x=>{$('#v-'+x).hidden=x!==v}); document.body.dataset.view=v;
   document.querySelectorAll('.tab').forEach(t=>t.setAttribute('aria-selected',String(t.dataset.view===v)));
   if(location.hash.slice(1)!==v){try{history.replaceState(null,'','#'+v)}catch{location.hash=v}}
   if(v==='clase') renderPlan();
+  if(v==='profesores') refreshPeople();
   window.scrollTo({top:0});
 }
 document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>go(t.dataset.view));
